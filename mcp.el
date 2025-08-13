@@ -420,7 +420,7 @@ The message is sent differently based on connection type:
                                                  data)))
                                 (unless (mcp--endpoint conn)
                                   (setf (mcp--endpoint conn) endpoint)
-                                  (mcp--send-initial-message conn))))
+                                  (mcp--send-initial-message conn project))))
                              ('message
                               (if (>= 0 rest-size)
                                   (push data
@@ -562,8 +562,13 @@ than a request."
            ,@(when params
                (list :params params)))))
 
-(defvar mcp-server-connections (make-hash-table :test #'equal)
+(defvar mcp-project-server-connections (make-hash-table)
   "Mcp server process.")
+
+(defun mcp-server-connections (project)
+  (unless (gethash project mcp-project-server-connections)
+    (puthash project (make-hash-table :test #'equal) mcp-project-server-connections))
+  (gethash project mcp-project-server-connections))
 
 (defun mcp-request-dispatcher (name method params)
   "Default handler for MCP server requests.
@@ -628,7 +633,7 @@ Returns nil if URL is invalid or not HTTP/HTTPS."
                         80))
               :path filename)))))
 
-(defun mcp--send-initial-message (connection &optional check-sse)
+(defun mcp--send-initial-message (connection project &optional check-sse)
   "Send initialization message to MCP server CONNECTION.
 
 This function sends the initial handshake message to establish communication
@@ -675,25 +680,25 @@ mcp server before sending."
                   (jsonrpc-name connection)
                   protocolVersion
                   mcp--support-versions)
-         (mcp-stop-server (jsonrpc-name connection)))))
+         (mcp-stop-server (jsonrpc-name connection) project))))
    (lambda (code message)
-     (mcp-stop-server (jsonrpc-name connection))
+     (mcp-stop-server (jsonrpc-name connection) project)
      (setf (mcp--status connection) 'error)
      (when (mcp--error-callback connection)
        (funcall (mcp--error-callback connection) code message))
      (message "Sadly, %s mpc server reports %s: %s"
               (jsonrpc-name connection) code message))))
 
-(defun mcp--server-running-p (name)
+(defun mcp--server-running-p (name project)
   "Return non-nil if server NAME is in running state."
-  (when-let* ((conn (gethash name mcp-server-connections)))
+  (when-let* ((conn (gethash name (mcp-server-connections project))))
     (not (member (mcp--status conn) '(stop error)))))
 
 ;;;###autoload
 (cl-defun mcp-connect-server (name &key command args url env initial-callback
                                    tools-callback prompts-callback
                                    resources-callback resources-templates-callback
-                                   error-callback)
+                                   error-callback project)
   "Connect to an MCP server with NAME, COMMAND, and ARGS or URL.
 
 NAME is a string representing the name of the server.
@@ -718,7 +723,7 @@ ERROR-CALLBACK is a function to call on error.
 This function creates a new process for the server, initializes a connection,
 and sends an initialization message to the server. The connection is stored
 in the `mcp-server-connections` hash table for future reference."
-  (unless (mcp--server-running-p name)
+  (unless (mcp--server-running-p name project)
     (when-let* ((server-config (cond (command
                                       (list :connection-type 'stdio
                                             :command command
@@ -782,7 +787,7 @@ in the `mcp-server-connections` hash table for future reference."
                                            :tls (plist-get server-config :tls)
                                            :path (plist-get server-config :path)))))))
         ;; Initialize connection
-        (puthash name connection mcp-server-connections)
+        (puthash name connection (mcp-server-connections project))
         ;; Send the Initialize message
         (run-with-idle-timer 1
                              nil
@@ -791,22 +796,22 @@ in the `mcp-server-connections` hash table for future reference."
                                    (if (jsonrpc-running-p connection)
                                        (when (or (equal connection-type 'stdio)
                                                  (equal connection-type 'http))
-                                         (mcp--send-initial-message connection t))
+                                         (mcp--send-initial-message connection project t))
                                      (error "Process start error"))
                                  (error
-                                  (mcp-stop-server (jsonrpc-name connection))
+                                  (mcp-stop-server (jsonrpc-name connection) project)
                                   (setf (mcp--status connection) 'error)
                                   (when error-callback
                                     (funcall error-callback -1 (format "%s" (cdr err))))
                                   (message "Sadly, %s mcp server process start error" name)))))))))
 
 ;;;###autoload
-(defun mcp-stop-server (name)
+(defun mcp-stop-server (name project)
   "Stop the MCP server with the given NAME.
 If the server is running, it will be shutdown and its connection will be removed
 from `mcp-server-connections'. If no server with the given NAME is found,
 a message will be displayed indicating that the server is not running."
-  (if-let* ((connection (gethash name mcp-server-connections)))
+  (if-let* ((connection (gethash name (mcp-server-connections project))))
       (progn
         (ignore-errors
           (jsonrpc-shutdown connection))
@@ -881,7 +886,7 @@ Returns a plist of argument names and values ready for tool invocation."
                                 (make-list need-length nil)))))))
 
 ;;;###autoload
-(defun mcp-make-text-tool (name tool-name &optional asyncp)
+(defun mcp-make-text-tool (name tool-name &optional asyncp project)
   "Create a `gptel' tool with the given NAME, TOOL-NAME, and ASYNCP.
 
 NAME is the name of the server connection.
@@ -893,7 +898,7 @@ This function retrieves the tool definition from the server connection,
 constructs a basic tool with the appropriate properties, and returns it.
 The tool is configured to handle input arguments, call the server, and process
 the response to extract and return text content."
-  (when-let* ((connection (gethash name mcp-server-connections))
+  (when-let* ((connection (gethash name (mcp-server-connections project)))
               (tools (mcp--tools connection))
               (tool (cl-find tool-name tools :test #'equal :key (lambda (tool) (plist-get tool :name)))))
     (cl-destructuring-bind (&key description ((:inputSchema input-schema)) &allow-other-keys) tool
@@ -903,7 +908,7 @@ the response to extract and return text content."
                        (lambda (callback &rest args)
                          (when (< (length args) (length required))
                            (error "Error: args not match: %s -> %s" required args))
-                         (if-let* ((connection (gethash name mcp-server-connections)))
+                         (if-let* ((connection (gethash name (mcp-server-connections project))))
                              (mcp-async-call-tool connection
                                                   tool-name
                                                   (mcp--generate-tool-call-args args properties)
@@ -920,7 +925,7 @@ the response to extract and return text content."
                      (lambda (&rest args)
                        (when (< (length args) (length required))
                          (error "Error: args not match: %s -> %s" required args))
-                       (if-let* ((connection (gethash name mcp-server-connections)))
+                       (if-let* ((connection (gethash name (mcp-server-connections project))))
                            (if-let* ((res (mcp-call-tool connection
                                                          tool-name
                                                          (mcp--generate-tool-call-args args properties))))

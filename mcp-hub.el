@@ -44,7 +44,7 @@ by omitting PROJECT."
   (puthash project servers mcp-hub--project-server-table))
 
 
-(defun mcp-hub--start-server (server &optional inited-callback)
+(defun mcp-hub--start-server (server &optional inited-callback project)
   "Start an MCP server with the given configuration.
 SERVER should be a cons cell of the form (NAME . CONFIG) where:
 - NAME is a string identifying the server
@@ -77,10 +77,11 @@ receives no arguments."
                          (mcp-hub-update))
                        :error-callback
                        (lambda (_ _)
-                         (mcp-hub-update))))))
+                         (mcp-hub-update))
+		       :project project))))
 
 ;;;###autoload
-(cl-defun mcp-hub-get-all-tool (&key asyncp categoryp)
+(cl-defun mcp-hub-get-all-tool (&key asyncp categoryp project)
   "Retrieve all available tools from connected MCP servers.
 This function collects all tools from currently connected MCP servers,
 filtering out any invalid entries. Each tool is created as a text tool
@@ -97,7 +98,7 @@ due to missing or invalid names.
 Example:
   (mcp-hub-get-all-tool)  ; Get all tools synchronously
   (mcp-hub-get-all-tool t)  ; Get all tools asynchronously"
-  (let ((res ))
+  (let ((res))
     (maphash (lambda (name server)
                (when (and server
                           (equal (mcp--status server)
@@ -114,7 +115,7 @@ Example:
                                           name))
                                tool))
                            res)))))
-             mcp-server-connections)
+	     (mcp-server-connections project))
     (nreverse res)))
 
 ;;;###autoload
@@ -130,11 +131,13 @@ arguments.
 Optional argument SERVERS is a list of server names (strings) to filter which
 servers should be started. When nil, all configured servers are considered."
   (interactive)
+  (unless project
+    (setq project (project-current)))
   (let* ((servers-to-start (cl-remove-if (lambda (server)
                                            (or (and servers
                                                     (not (cl-find (car server) servers :test #'string=)))
-                                               (mcp--server-running-p (car server))))
-                                         (gethash (or project (project-current)) mcp-hub--project-server-table)))
+                                               (mcp--server-running-p (car server) project)))
+                                         (gethash project mcp-hub--project-server-table)))
          (total (length servers-to-start))
          (started 0))
     (if (zerop total)
@@ -150,7 +153,8 @@ servers should be started. When nil, all configured servers are considered."
                (cl-incf started)
                (message "Started server %s (%d/%d)" (car server) started total)
                (when (and callback (>= started total))
-                 (funcall callback))))
+                 (funcall callback)))
+	     project)
           (error
            (message "Failed to start server %s: %s" (car server) err)
            (cl-incf started)
@@ -163,11 +167,14 @@ servers should be started. When nil, all configured servers are considered."
 This function will attempt to stop each server listed in `mcp-hub--project-server-table'
 that is currently running."
   (interactive)
-  (dolist (server (gethash (or project (project-current)) mcp-hub--project-server-table))
+  (unless project
+    (setq project (project-current)))
+  
+  (dolist (server (gethash project mcp-hub--project-server-table))
     (when (gethash (car server)
-                   mcp-server-connections)
-      (mcp-stop-server (car server))))
-  (mcp-hub-update))
+		   (mcp-server-connections project))
+      (mcp-stop-server (car server) project)))
+  (mcp-hub-update nil nil project))
 
 ;;;###autoload
 (defun mcp-hub-restart-all-server ()
@@ -189,7 +196,7 @@ Returns a list of server statuses, where each status is a plist containing:
 - :prompts - Available prompts (if connected)"
   (mapcar (lambda (server)
             (let ((name (car server)))
-              (if-let* ((connection (gethash name mcp-server-connections)))
+              (if-let* ((connection (gethash name (mcp-server-connections project))))
                   (list :name name
                         :type (mcp--connection-type connection)
                         :status (mcp--status connection)
@@ -256,39 +263,46 @@ Start all servers if START is non-nil or if called interactively with a prefix
 argument."
   (interactive "P")
   ;; start all server
-  (let ((project (or project (project-current))))
-    (when (and start
-	       (gethash project mcp-hub--project-server-table)
-               (= (hash-table-count mcp-server-connections)
-                  0))
-      (mcp-hub-start-all-server))
-    ;; show buffer
-    (pop-to-buffer (mcp-hub--buffer-name project))
-    (mcp-hub-mode)))
+  (unless project
+    (setq project (project-current)))
+  (when (and start
+	     (gethash project mcp-hub--project-server-table)
+             (= (hash-table-count (mcp-server-connections project))
+                0))
+    (mcp-hub-start-all-server))
+  ;; show buffer
+  (pop-to-buffer (mcp-hub--buffer-name project))
+  (mcp-hub-mode))
 
 ;;;###autoload
-(defun mcp-hub-start-server ()
+(defun mcp-hub-start-server (&optional project)
   "Start the currently selected MCP server.
 This function starts the server that is currently highlighted in the *Mcp-Hub*
 buffer. It sets up callbacks for connection status, tools, prompts, and
 resources updates, and refreshes the hub view after starting the server."
   (interactive)
+  (unless project
+    (setq project (project-current)))
   (when-let* ((server (tabulated-list-get-entry))
               (name (elt server 0))
               (server-arg (cl-find name (gethash (project-current) mcp-hub--project-server-table) :key #'car :test #'equal)))
-    (mcp-hub--start-server server-arg)
+    (mcp-hub--start-server server-arg nil project)
     (mcp-hub-update)))
 
 ;;;###autoload
-(defun mcp-hub-close-server ()
+(defun mcp-hub-close-server (&optional project)
   "Stop the currently selected MCP server.
 This function stops the server that is currently highlighted in the *Mcp-Hub*
 buffer and updates the hub view to reflect the change in status."
   (interactive)
+
+  (unless project
+    (setq project (project-current)))
+  
   (when-let* ((server (tabulated-list-get-entry))
               (name (elt server 0)))
-    (mcp-stop-server name)
-    (mcp-hub-update)))
+    (mcp-stop-server name project)
+    (mcp-hub-update nil nil project)))
 
 ;;;###autoload
 (defun mcp-hub-restart-server ()
@@ -297,7 +311,7 @@ This function stops and then starts the server that is currently highlighted
 in the *Mcp-Hub* buffer. It's useful for applying configuration changes or
 recovering from errors."
   (interactive)
-  (mcp-hub-close-server)
+  (mcp-hub-clos-server)
   (mcp-hub-start-server))
 
 ;;;###autoload
