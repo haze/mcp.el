@@ -38,7 +38,7 @@
 ;; - Integration with popular Emacs packages (e.g., gptel, llm)
 ;;
 ;; Usage:
-;; - config `mcp-hub-servers'
+;; - add `mcp-hub' servers to projects via `mcp-hub-register-servers-for'
 ;; - call `mcp-hub' to start mcp servers
 
 ;;; Code:
@@ -77,13 +77,13 @@ Available levels:
 - emergency: System is unusable (complete system failure)"
   :group 'mcp
   :type '(choice (const :tag "debug" debug)
-          (const :tag "info" info)
-          (const :tag "notice" notice)
-          (const :tag "warning" warning)
-          (const :tag "error" error)
-          (const :tag "critical" critical)
-          (const :tag "alert" alert)
-          (const :tag "emergency" emergency)))
+		 (const :tag "info" info)
+		 (const :tag "notice" notice)
+		 (const :tag "warning" warning)
+		 (const :tag "error" error)
+		 (const :tag "critical" critical)
+		 (const :tag "alert" alert)
+		 (const :tag "emergency" emergency)))
 
 (defcustom mcp-log-size nil
   "Maximum size for logging jsonrpc event.  0 disables, nil means infinite."

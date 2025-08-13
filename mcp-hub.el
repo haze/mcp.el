@@ -26,16 +26,23 @@
 
 (require 'mcp)
 
-(defcustom mcp-hub-servers nil
+(defvar mcp-hub--project-server-table (make-hash-table)
   "Configuration for MCP servers.
 Each server configuration is a list of the form
  (NAME . (:command COMMAND :args ARGS)) or (NAME . (:url URL)), where:
 - NAME is a string identifying the server.
 - COMMAND is the command to start the server.
 - ARGS is a list of arguments passed to the command.
-- URL is a string arguments to connect sse mcp server."
-  :group 'mcp-hub
-  :type '(list (cons string (list symbol string))))
+- URL is a string arguments to connect sse mcp server.")
+
+(defun mcp-hub-register-servers-for (servers &optional project)
+  "Insert SERVERS into `mcp-hub--project-server-table' keyed by PROJECT.
+
+You can set a default server configuration 
+(mcp server definitions for buffers not tied to a project)
+by omitting PROJECT."
+  (puthash project servers mcp-hub--project-server-table))
+
 
 (defun mcp-hub--start-server (server &optional inited-callback)
   "Start an MCP server with the given configuration.
@@ -111,9 +118,9 @@ Example:
     (nreverse res)))
 
 ;;;###autoload
-(defun mcp-hub-start-all-server (&optional callback servers)
+(defun mcp-hub-start-all-server (&optional project callback servers)
   "Start all configured MCP servers.
-This function will attempt to start each server listed in `mcp-hub-servers'
+This function will attempt to start each server listed in `mcp-hub--project-server-table'
 if it's not already running.
 
 Optional argument CALLBACK is a function to be called when all servers have
@@ -127,7 +134,7 @@ servers should be started. When nil, all configured servers are considered."
                                            (or (and servers
                                                     (not (cl-find (car server) servers :test #'string=)))
                                                (mcp--server-running-p (car server))))
-                                         mcp-hub-servers))
+                                         (gethash (or project (project-current)) mcp-hub--project-server-table)))
          (total (length servers-to-start))
          (started 0))
     (if (zerop total)
@@ -151,12 +158,12 @@ servers should be started. When nil, all configured servers are considered."
              (funcall callback))))))))
 
 ;;;###autoload
-(defun mcp-hub-close-all-server ()
+(defun mcp-hub-close-all-server (&optional project)
   "Stop all running MCP servers.
-This function will attempt to stop each server listed in `mcp-hub-servers'
+This function will attempt to stop each server listed in `mcp-hub--project-server-table'
 that is currently running."
   (interactive)
-  (dolist (server mcp-hub-servers)
+  (dolist (server (gethash (or project (project-current)) mcp-hub--project-server-table))
     (when (gethash (car server)
                    mcp-server-connections)
       (mcp-stop-server (car server))))
@@ -171,7 +178,7 @@ It's useful for applying configuration changes or recovering from errors."
   (mcp-hub-close-all-server)
   (mcp-hub-start-all-server))
 
-(defun mcp-hub-get-servers ()
+(defun mcp-hub-get-servers (&optional project)
   "Retrieve status information for all configured servers.
 Returns a list of server statuses, where each status is a plist containing:
 - :name - The server's name
@@ -191,9 +198,9 @@ Returns a list of server statuses, where each status is a plist containing:
                         :template-resources (mcp--template-resources connection)
                         :prompts (mcp--prompts connection))
                 (list :name name :status 'stop))))
-          mcp-hub-servers))
+          (gethash (or project (project-current)) mcp-hub--project-server-table)))
 
-(defun mcp-hub-update (&optional ignore-auto noconfirm)
+(defun mcp-hub-update (&optional ignore-auto noconfirm project)
   "Update the MCP Hub display with current server status.
 If called interactively, ARG is the prefix argument.
 When SILENT is non-nil, suppress any status messages.
@@ -202,55 +209,62 @@ including connection status, available tools, resources, template resources and
 prompts."
   (interactive)
   (ignore ignore-auto noconfirm) ; unused variables
-  (when-let* ((server-list (mcp-hub-get-servers))
-              (server-show (mapcar (lambda (server)
-                                     (let* ((name (plist-get server :name))
-                                            (status (plist-get server :status)))
-                                       (append (list name
-                                                     (symbol-name (plist-get server :type))
-                                                     (pcase status
-                                                       ('connected
-                                                        (propertize (symbol-name status)
-                                                                    'face 'success))
-                                                       ('error
-                                                        (propertize (symbol-name status)
-                                                                    'face 'error))
-                                                       (_
-                                                        (symbol-name status))))
-                                               (if (equal status 'connected)
-                                                   (mapcar (lambda (x)
-                                                             (format "%d"
-                                                                     (length x)))
-                                                           (list (plist-get server :tools)
-                                                                 (plist-get server :resources)
-                                                                 (plist-get server :template-resources)
-                                                                 (plist-get server :prompts)))
-                                                 (list "nil" "nil" "nil" "nil")))))
-                                   server-list)))
-    (with-current-buffer (get-buffer-create "*Mcp-Hub*")
-      (setq tabulated-list-entries
-            (cl-mapcar (lambda (statu index)
-                         (list (format "%d" index)
-                               (vconcat statu)))
-                       server-show
-                       (number-sequence 1 (length server-list))))
-      (tabulated-list-print t))))
+  (let ((project (or project (project-current))))
+    (when-let* ((server-list (mcp-hub-get-servers project))
+		(server-show (mapcar (lambda (server)
+                                       (let* ((name (plist-get server :name))
+                                              (status (plist-get server :status)))
+					 (append (list name
+                                                       (symbol-name (plist-get server :type))
+                                                       (pcase status
+							 ('connected
+                                                          (propertize (symbol-name status)
+                                                                      'face 'success))
+							 ('error
+                                                          (propertize (symbol-name status)
+                                                                      'face 'error))
+							 (_
+                                                          (symbol-name status))))
+						 (if (equal status 'connected)
+                                                     (mapcar (lambda (x)
+                                                               (format "%d"
+                                                                       (length x)))
+                                                             (list (plist-get server :tools)
+                                                                   (plist-get server :resources)
+                                                                   (plist-get server :template-resources)
+                                                                   (plist-get server :prompts)))
+                                                   (list "nil" "nil" "nil" "nil")))))
+                                     server-list)))
+      (with-current-buffer (get-buffer-create (mcp-hub--buffer-name project))
+	(setq tabulated-list-entries
+              (cl-mapcar (lambda (statu index)
+                           (list (format "%d" index)
+				 (vconcat statu)))
+			 server-show
+			 (number-sequence 1 (length server-list))))
+	(tabulated-list-print t)))))
+
+(defun mcp-hub--buffer-name (&optional project)
+  (if project
+      (format "*Mcp-Hub %s*" (project-name project))
+    "*Mcp-Hub*"))
 
 ;;;###autoload
-(defun mcp-hub (&optional start)
+(defun mcp-hub (&optional start project)
   "View mcp hub server.
-Start all server if START is non-nil or if called interactively with a prefix
+Start all servers if START is non-nil or if called interactively with a prefix
 argument."
   (interactive "P")
   ;; start all server
-  (when (and start
-             mcp-hub-servers
-             (= (hash-table-count mcp-server-connections)
-                0))
-    (mcp-hub-start-all-server))
-  ;; show buffer
-  (pop-to-buffer "*Mcp-Hub*" nil)
-  (mcp-hub-mode))
+  (let ((project (or project (project-current))))
+    (when (and start
+	       (gethash project mcp-hub--project-server-table)
+               (= (hash-table-count mcp-server-connections)
+                  0))
+      (mcp-hub-start-all-server))
+    ;; show buffer
+    (pop-to-buffer (mcp-hub--buffer-name project))
+    (mcp-hub-mode)))
 
 ;;;###autoload
 (defun mcp-hub-start-server ()
@@ -261,7 +275,7 @@ resources updates, and refreshes the hub view after starting the server."
   (interactive)
   (when-let* ((server (tabulated-list-get-entry))
               (name (elt server 0))
-              (server-arg (cl-find name mcp-hub-servers :key #'car :test #'equal)))
+              (server-arg (cl-find name (gethash (project-current) mcp-hub--project-server-table) :key #'car :test #'equal)))
     (mcp-hub--start-server server-arg)
     (mcp-hub-update)))
 
