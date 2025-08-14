@@ -184,6 +184,29 @@ Available levels:
   "Return non-nil if JSONRPC connection CONN is running."
   (setf (mcp--running conn) nil))
 
+(cl-defmethod jsonrpc-shutdown :after ((conn mcp-process-connection))
+  "Remove connection from mcp-server-connections hash table after shutdown."
+  (let ((found-project nil) ;; nil project-to-remove is valid
+	(project-to-remove nil)
+        (server-name-to-remove nil))
+    ;; Find the connection to remove
+    (maphash (lambda (project project-connections-table)
+               (maphash (lambda (server-name connection)
+			  (message "%s = %s? %s" (type-of connection) (type-of conn) (eq connection conn))
+                          (when (eq connection conn)
+                            (setq found-project t
+				  project-to-remove project
+                                  server-name-to-remove server-name)))
+                        project-connections-table))
+             mcp-project-server-connections)
+    ;; Remove it if found
+
+    (when (and found-project server-name-to-remove)
+      (remhash server-name-to-remove (gethash project-to-remove
+					      mcp-project-server-connections))
+      (mcp-hub-update nil nil project-to-remove))))
+
+
 (defun mcp--parse-http-header (headers)
   "Parse HTTP response headers into a plist.
 

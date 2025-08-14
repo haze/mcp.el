@@ -311,7 +311,7 @@ This function stops and then starts the server that is currently highlighted
 in the *Mcp-Hub* buffer. It's useful for applying configuration changes or
 recovering from errors."
   (interactive)
-  (mcp-hub-clos-server)
+  (mcp-hub-close-server)
   (mcp-hub-start-server))
 
 ;;;###autoload
