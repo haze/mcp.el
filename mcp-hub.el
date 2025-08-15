@@ -130,9 +130,8 @@ arguments.
 
 Optional argument SERVERS is a list of server names (strings) to filter which
 servers should be started. When nil, all configured servers are considered."
-  (interactive)
-  (unless project
-    (setq project (project-current)))
+  (interactive (list (project-current) nil nil))
+
   (let* ((servers-to-start (cl-remove-if (lambda (server)
                                            (or (and servers
                                                     (not (cl-find (car server) servers :test #'string=)))
@@ -166,9 +165,7 @@ servers should be started. When nil, all configured servers are considered."
   "Stop all running MCP servers.
 This function will attempt to stop each server listed in `mcp-hub--project-server-table'
 that is currently running."
-  (interactive)
-  (unless project
-    (setq project (project-current)))
+  (interactive (list (project-current)))
   
   (dolist (server (gethash project mcp-hub--project-server-table))
     (when (gethash (car server)
@@ -261,10 +258,9 @@ prompts."
   "View mcp hub server.
 Start all servers if START is non-nil or if called interactively with a prefix
 argument."
-  (interactive "P")
+  (interactive (list current-prefix-arg (project-current)))
+  
   ;; start all server
-  (unless project
-    (setq project (project-current)))
   (when (and start
 	     (gethash project mcp-hub--project-server-table)
              (= (hash-table-count (mcp-server-connections project))
@@ -280,9 +276,8 @@ argument."
 This function starts the server that is currently highlighted in the *Mcp-Hub*
 buffer. It sets up callbacks for connection status, tools, prompts, and
 resources updates, and refreshes the hub view after starting the server."
-  (interactive)
-  (unless project
-    (setq project (project-current)))
+  (interactive (list (project-current)))
+
   (when-let* ((server (tabulated-list-get-entry))
               (name (elt server 0))
               (server-arg (cl-find name (gethash (project-current) mcp-hub--project-server-table) :key #'car :test #'equal)))
@@ -294,10 +289,7 @@ resources updates, and refreshes the hub view after starting the server."
   "Stop the currently selected MCP server.
 This function stops the server that is currently highlighted in the *Mcp-Hub*
 buffer and updates the hub view to reflect the change in status."
-  (interactive)
-
-  (unless project
-    (setq project (project-current)))
+  (interactive (list (project-current)))
   
   (when-let* ((server (tabulated-list-get-entry))
               (name (elt server 0)))
