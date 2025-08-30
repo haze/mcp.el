@@ -35,9 +35,14 @@ Each server configuration is a list of the form
 - ARGS is a list of arguments passed to the command.
 - URL is a string arguments to connect sse mcp server."
   :group 'mcp-hub
-  :type '(list (cons string (list symbol string))))
+  :type '(list (cons string (list symbol string)))
+  :local t)
 
-(defun mcp-hub--start-server (server &optional inited-callback)
+(defvar-local mcp-hub--buffer nil
+  "The buffer said *Mcp-Hub* buffer reflects.")
+(put 'mcp-hub--buffer 'permanent-local t)
+
+(defun mcp-hub--start-server (buffer server &optional inited-callback)
   "Start an MCP server with the given configuration.
 SERVER should be a cons cell of the form (NAME . CONFIG) where:
 - NAME is a string identifying the server
@@ -49,31 +54,31 @@ Optional argument INITED-CALLBACK is a function called when the server
 has successfully initialized and tools are available. The callback
 receives no arguments."
   (apply #'mcp-connect-server
-         (append (list (car server))
+         (append (list buffer (car server))
                  (cdr server)
                  (list :initial-callback
                        (lambda (_)
-                         (mcp-hub-update))
+                         (mcp-hub-update buffer))
                        :tools-callback
                        (lambda (_ _)
-                         (mcp-hub-update)
+                         (mcp-hub-update buffer)
                          (when inited-callback
                            (funcall inited-callback)))
                        :prompts-callback
                        (lambda (_ _)
-                         (mcp-hub-update))
+                         (mcp-hub-update buffer))
                        :resources-callback
                        (lambda (_ _)
-                         (mcp-hub-update))
+                         (mcp-hub-update buffer))
                        :resources-templates-callback
                        (lambda (_ _)
-                         (mcp-hub-update))
+                         (mcp-hub-update buffer))
                        :error-callback
                        (lambda (_ _)
-                         (mcp-hub-update))))))
+                         (mcp-hub-update buffer))))))
 
 ;;;###autoload
-(cl-defun mcp-hub-get-all-tool (&key asyncp categoryp)
+(cl-defun mcp-hub-get-all-tool (&key buffer asyncp categoryp)
   "Retrieve all available tools from connected MCP servers.
 This function collects all tools from currently connected MCP servers,
 filtering out any invalid entries. Each tool is created as a text tool
@@ -91,27 +96,27 @@ Example:
   (mcp-hub-get-all-tool)  ; Get all tools synchronously
   (mcp-hub-get-all-tool t)  ; Get all tools asynchronously"
   (let ((res ))
-    (maphash (lambda (name server)
+    (maphash (lambda (key server)
                (when (and server
                           (equal (mcp--status server)
                                  'connected))
                  (when-let* ((tools (mcp--tools server))
                              (tool-names (mapcar (lambda (tool) (plist-get tool :name)) tools)))
                    (dolist (tool-name tool-names)
-                     (push (let ((tool (mcp-make-text-tool name tool-name asyncp)))
+                     (push (let ((tool (mcp-make-text-tool (jsonrpc-name server) tool-name asyncp)))
                              (if categoryp
                                  (plist-put
                                   tool
                                   :category
                                   (format "mcp-%s"
-                                          name))
+                                          (jsonrpc-name server)))
                                tool))
                            res)))))
              mcp-server-connections)
     (nreverse res)))
 
 ;;;###autoload
-(defun mcp-hub-start-all-server (&optional callback servers)
+(defun mcp-hub-start-all-server (buffer &optional callback servers)
   "Start all configured MCP servers.
 This function will attempt to start each server listed in `mcp-hub-servers'
 if it's not already running.
@@ -122,11 +127,11 @@ arguments.
 
 Optional argument SERVERS is a list of server names (strings) to filter which
 servers should be started. When nil, all configured servers are considered."
-  (interactive)
+  (interactive (list (current-buffer) nil nil))
   (let* ((servers-to-start (cl-remove-if (lambda (server)
                                            (or (and servers
                                                     (not (cl-find (car server) servers :test #'string=)))
-                                               (mcp--server-running-p (car server))))
+                                               (mcp--server-running-p buffer (car server))))
                                          mcp-hub-servers))
          (total (length servers-to-start))
          (started 0))
@@ -138,6 +143,7 @@ servers should be started. When nil, all configured servers are considered."
       (dolist (server servers-to-start)
         (condition-case err
             (mcp-hub--start-server
+	     buffer
              server
              (lambda ()
                (cl-incf started)
@@ -151,27 +157,27 @@ servers should be started. When nil, all configured servers are considered."
              (funcall callback))))))))
 
 ;;;###autoload
-(defun mcp-hub-close-all-server ()
+(defun mcp-hub-close-all-server (buffer)
   "Stop all running MCP servers.
 This function will attempt to stop each server listed in `mcp-hub-servers'
 that is currently running."
   (interactive)
   (dolist (server mcp-hub-servers)
-    (when (gethash (car server)
+    (when (gethash (mcp--get-server-key buffer (car server))
                    mcp-server-connections)
-      (mcp-stop-server (car server))))
-  (mcp-hub-update))
+      (mcp-stop-server buffer (car server))))
+  (mcp-hub-update buffer))
 
 ;;;###autoload
-(defun mcp-hub-restart-all-server ()
+(defun mcp-hub-restart-all-server (buffer)
   "Restart all configured MCP servers.
 This function first stops all running servers, then starts them again.
 It's useful for applying configuration changes or recovering from errors."
-  (interactive)
-  (mcp-hub-close-all-server)
-  (mcp-hub-start-all-server))
+  (interactive (list (current-buffer)))
+  (mcp-hub-close-all-server buffer)
+  (mcp-hub-start-all-server buffer))
 
-(defun mcp-hub-get-servers ()
+(defun mcp-hub-get-servers (buffer)
   "Retrieve status information for all configured servers.
 Returns a list of server statuses, where each status is a plist containing:
 - :name - The server's name
@@ -182,7 +188,7 @@ Returns a list of server statuses, where each status is a plist containing:
 - :prompts - Available prompts (if connected)"
   (mapcar (lambda (server)
             (let ((name (car server)))
-              (if-let* ((connection (gethash name mcp-server-connections)))
+              (if-let* ((connection (gethash (mcp--get-server-key buffer name) mcp-server-connections)))
                   (list :name name
                         :type (mcp--connection-type connection)
                         :status (mcp--status connection)
@@ -193,16 +199,19 @@ Returns a list of server statuses, where each status is a plist containing:
                 (list :name name :status 'stop))))
           mcp-hub-servers))
 
-(defun mcp-hub-update (&optional ignore-auto noconfirm)
+(defun mcp-hub--buffer-name (buffer)
+  (format "*Mcp-Hub %s*" (buffer-name buffer)))
+
+(defun mcp-hub-update (buffer &optional ignore-auto noconfirm)
   "Update the MCP Hub display with current server status.
 If called interactively, ARG is the prefix argument.
 When SILENT is non-nil, suppress any status messages.
 This function refreshes the *Mcp-Hub* buffer with the latest server information,
 including connection status, available tools, resources, template resources and
 prompts."
-  (interactive)
-  (ignore ignore-auto noconfirm) ; unused variables
-  (when-let* ((server-list (mcp-hub-get-servers))
+  (interactive (list (or mcp-hub--buffer (current-buffer)) nil nil))
+  (ignore ignore-auto noconfirm)	; unused variables
+  (when-let* ((server-list (mcp-hub-get-servers buffer))
               (server-show (mapcar (lambda (server)
                                      (let* ((name (plist-get server :name))
                                             (status (plist-get server :status)))
@@ -227,7 +236,7 @@ prompts."
                                                                  (plist-get server :prompts)))
                                                  (list "nil" "nil" "nil" "nil")))))
                                    server-list)))
-    (with-current-buffer (get-buffer-create "*Mcp-Hub*")
+    (with-current-buffer (get-buffer-create (mcp-hub--buffer-name buffer))
       (setq tabulated-list-entries
             (cl-mapcar (lambda (statu index)
                          (list (format "%d" index)
@@ -237,20 +246,23 @@ prompts."
       (tabulated-list-print t))))
 
 ;;;###autoload
-(defun mcp-hub (&optional start)
+(defun mcp-hub (buffer &optional start)
   "View mcp hub server.
 Start all server if START is non-nil or if called interactively with a prefix
 argument."
-  (interactive "P")
+  (interactive (list (current-buffer) prefix-arg))
   ;; start all server
   (when (and start
              mcp-hub-servers
              (= (hash-table-count mcp-server-connections)
                 0))
-    (mcp-hub-start-all-server))
+    (mcp-hub-start-all-server buffer))
+  
   ;; show buffer
-  (pop-to-buffer "*Mcp-Hub*" nil)
-  (mcp-hub-mode))
+  (with-current-buffer (get-buffer-create (mcp-hub--buffer-name buffer))
+    (pop-to-buffer (current-buffer) nil)
+    (setq mcp-hub--buffer buffer)
+    (mcp-hub-mode)))
 
 ;;;###autoload
 (defun mcp-hub-start-server ()
@@ -262,8 +274,8 @@ resources updates, and refreshes the hub view after starting the server."
   (when-let* ((server (tabulated-list-get-entry))
               (name (elt server 0))
               (server-arg (cl-find name mcp-hub-servers :key #'car :test #'equal)))
-    (mcp-hub--start-server server-arg)
-    (mcp-hub-update)))
+    (mcp-hub--start-server mcp-hub--buffer server-arg)
+    (mcp-hub-update mcp-hub--buffer)))
 
 ;;;###autoload
 (defun mcp-hub-close-server ()
@@ -273,8 +285,8 @@ buffer and updates the hub view to reflect the change in status."
   (interactive)
   (when-let* ((server (tabulated-list-get-entry))
               (name (elt server 0)))
-    (mcp-stop-server name)
-    (mcp-hub-update)))
+    (mcp-stop-server mcp-hub--buffer name)
+    (mcp-hub-update mcp-hub--buffer)))
 
 ;;;###autoload
 (defun mcp-hub-restart-server ()
@@ -320,7 +332,7 @@ currently highlighted in the *Mcp-Hub* buffer."
   (keymap-set mcp-hub-mode-map "R" #'mcp-hub-restart-all-server)
   (keymap-set mcp-hub-mode-map "K" #'mcp-hub-close-all-server)
 
-  (mcp-hub-update))
+  (mcp-hub-update mcp-hub--buffer))
 
 (provide 'mcp-hub)
 ;;; mcp-hub.el ends here
